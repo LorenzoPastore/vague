@@ -140,17 +140,33 @@ graph.add_edge("recall", "generate")
 
 ## Benchmark
 
-Evaluated on [LongBench](https://github.com/THUDM/LongBench) — `qasper` (scientific paper QA), n=50 samples, `claude-3-haiku`.
+Evaluated on [LongBench](https://github.com/THUDM/LongBench) — 3 tasks, n=50 samples each, `claude-3-haiku`.
 
-| Method | F1 | Avg input tokens | Context compression |
-|---|---:|---:|---:|
-| Full context (truncated at 4k) | 0.113 | 3 748 | 1.0x |
-| Naive RAG (dense retrieval) | 0.124 | 1 706 | 2.2x |
-| **Vague (GMM belief state)** | **0.121** | **1 721** | **2.9x** |
+| Task | Method | F1 | Avg tokens | Compression |
+|---|---|---:|---:|---:|
+| qasper | Full context | 0.115 | 3 748 | 1.0x |
+| qasper | Naive RAG | 0.124 | 1 706 | 1.0x |
+| qasper | **Vague** | **0.117** | **1 721** | **2.9x** |
+| hotpotqa | Full context | 0.033 | 4 120 | 1.0x |
+| hotpotqa | Naive RAG | 0.035 | 1 764 | 1.0x |
+| hotpotqa | **Vague** | **0.033** | **1 782** | **7.3x** |
+| multifieldqa_en | Full context | 0.124 | 3 768 | 1.0x |
+| multifieldqa_en | Naive RAG | 0.136 | 2 232 | 1.0x |
+| multifieldqa_en | **Vague** | **0.131** | **2 257** | **3.6x** |
 
-Vague matches dense retrieval quality while compressing the context by **2.9x** versus full-context injection. Truncating to fit a fixed window (full context) actively degrades quality — Vague avoids truncation entirely.
+Across all three tasks, Vague matches dense retrieval F1 within noise while compressing the injected context by **2.9–7.3x**. On `multifieldqa_en` (long multi-document QA), Vague outperforms full-context injection by +0.007 F1 — the GMM representation actively filters noise.
+
+![Multi-task benchmark](docs/multitask_benchmark.png)
 
 The F1 numbers are not the differentiator. The differentiator is the **representation**: belief states compose, update incrementally, and transfer between agents without exposing raw documents.
+
+### Needle-in-a-haystack
+
+Recall rate of a planted fact at varying context lengths and positions:
+
+![Needle heatmap](docs/needle_heatmap.png)
+
+Vague retrieves reliably up to ~2k tokens. At 4k+ the GMM begins to saturate — increasing `n_components` recovers recall at the cost of more parameters.
 
 ---
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import copy
-
 import numpy as np
 import pytest
 
@@ -135,18 +133,14 @@ def test_query_relevance(fitted_belief: GaussianBelief) -> None:
     random_text = "She had always seen it with pain; but respecting his abilities."
     rnd_vec = embedder.embed_single(random_text)
 
-    top_sim = float(np.dot(q_vec, top_vec))
-    rnd_sim = float(np.dot(q_vec, rnd_vec))
-
     # The GMM scores should produce a non-trivially ordered list;
-    # we verify the top result exists in the corpus
+    # we verify the top result exists in the corpus and has higher similarity than random
+    assert float(np.dot(q_vec, top_vec)) >= float(np.dot(q_vec, rnd_vec))
     assert top_text in CORPUS
 
 
 def test_update_modifies_belief(fitted_belief: GaussianBelief) -> None:
     """Calling update() should change the GMM means."""
-    import copy
-
     original_means = fitted_belief._gmm.means_.copy()
 
     new_text = "Mr. Darcy proposed to Elizabeth most unexpectedly on a cold morning."
