@@ -1,0 +1,21 @@
+# secrets
+.env
+.env.*
+*.env
+
+# cache & data
+.cache/
+.venv/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# generated
+benchmarks/results/
+notebooks/.ipynb_checkpoints/
