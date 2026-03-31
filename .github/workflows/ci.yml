@@ -46,4 +46,4 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Smoke benchmark (needle, 1k tokens)
-        run: python -c "from benchmarks.needle import run_needle; r = run_needle(1024, 0.5, n_components=8); assert r['found'] is not None"
+        run: python -c "from benchmarks.needle import run_needle; r = run_needle(1024, 0.5, n_components=8); assert r['found_rate'] is not None"
