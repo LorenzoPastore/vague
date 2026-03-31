@@ -1,3 +1,7 @@
+# claude code
+.claude/
+CLAUDE.md
+
 # secrets
 .env
 .env.*

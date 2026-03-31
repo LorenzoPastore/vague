@@ -6,8 +6,6 @@ tests run even without the real package installed.
 
 from __future__ import annotations
 
-import pytest
-
 from vague.memory import BeliefMemory
 from vague.agent import BeliefStateAgent
 from vague.adapters.langgraph import gaussian_memory_node, make_belief_graph
@@ -72,7 +70,9 @@ def test_memory_node_observe():
 
 def test_make_belief_graph_structure():
     """make_belief_graph returns a graph with the correct node and edge structure."""
-    dummy_llm = lambda p: "response"
+    def dummy_llm(p: str) -> str:
+        return "response"
+
     agents = [
         BeliefStateAgent(dummy_llm, memory=_fitted_memory()),
         BeliefStateAgent(dummy_llm, memory=_fitted_memory()),
