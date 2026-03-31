@@ -9,15 +9,18 @@ from vague.memory import BeliefMemory
 
 logger = logging.getLogger(__name__)
 
+try:
+    import tiktoken as _tiktoken
+    _ENCODER = _tiktoken.get_encoding("cl100k_base")
+except ImportError:
+    _ENCODER = None
+
 
 def _count_tokens(text: str) -> int:
     """Approximate token count using tiktoken if available, else len//4."""
-    try:
-        import tiktoken
-        enc = tiktoken.get_encoding("cl100k_base")
-        return len(enc.encode(text))
-    except ImportError:
-        return len(text) // 4
+    if _ENCODER is not None:
+        return len(_ENCODER.encode(text))
+    return len(text) // 4
 
 
 class BeliefStateAgent:
@@ -36,7 +39,6 @@ class BeliefStateAgent:
         self.recall_k = recall_k
         self._total_input_tokens: int = 0
         self._total_output_tokens: int = 0
-        self._cache_hits: int = 0
 
     def observe(self, text: str) -> None:
         """Add text to agent memory."""
@@ -49,7 +51,10 @@ class BeliefStateAgent:
         parts: list[str] = []
         if self.system_prompt:
             parts.append(self.system_prompt)
-        parts.extend(recalled)
+        if recalled:
+            parts.append("--- Context ---")
+            parts.extend(recalled)
+            parts.append("--- End Context ---")
         parts.append(task)
         prompt = "\n".join(parts)
 
@@ -71,5 +76,4 @@ class BeliefStateAgent:
         return {
             "total_input_tokens": self._total_input_tokens,
             "total_output_tokens": self._total_output_tokens,
-            "cache_hits": self._cache_hits,
         }

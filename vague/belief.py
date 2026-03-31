@@ -104,7 +104,7 @@ class GaussianBelief:
         x_new = self._embedder.embed_single(new_text)  # shape (D,)
 
         # Posterior responsibilities for x_new under current GMM
-        log_resp = self._gmm._estimate_log_prob(x_new.reshape(1, -1))  # (1, K)
+        log_resp = self._component_log_prob(x_new.reshape(1, -1), self._gmm)  # (1, K)
         log_resp += np.log(self._gmm.weights_)
         log_resp -= logsumexp(log_resp, axis=1, keepdims=True)
         k = int(np.argmax(log_resp[0]))
@@ -112,16 +112,23 @@ class GaussianBelief:
         n_components = len(self._gmm.weights_)
         lr = weight / (n_components + 1)
 
-        self._gmm.means_[k] = (1 - lr) * self._gmm.means_[k] + lr * x_new
+        # EMA update for mean — capture delta before shifting
+        mu_old = self._gmm.means_[k].copy()
+        self._gmm.means_[k] = (1 - lr) * mu_old + lr * x_new
+
+        # EMA update for covariance (rank-1 outer product update)
+        delta = x_new - mu_old
+        self._gmm.covariances_[k] = (
+            (1 - lr) * self._gmm.covariances_[k] + lr * (1 - lr) * np.outer(delta, delta)
+        )
 
         # Update weight of nearest component proportionally
         self._gmm.weights_[k] += lr * (1.0 - self._gmm.weights_[k])
         self._gmm.weights_ /= self._gmm.weights_.sum()
 
-        # Recompute precision cholesky for updated component to keep GMM consistent
-        cov_k = self._gmm.covariances_[k]
+        # Recompute precision cholesky for updated component
         try:
-            L = np.linalg.cholesky(cov_k)
+            L = np.linalg.cholesky(self._gmm.covariances_[k])
             self._gmm.precisions_cholesky_[k] = np.linalg.solve(L, np.eye(len(L))).T
         except np.linalg.LinAlgError:
             pass  # keep existing precisions if covariance is not PD
@@ -218,16 +225,14 @@ class GaussianBelief:
         q_vec = self._embedder.embed_single(query)  # shape (D,)
 
         # Posterior of query under each GMM component: r(k) = p(k | q)
-        log_resp = self._gmm._estimate_log_prob(q_vec.reshape(1, -1))[0]  # (K,)
+        log_resp = self._component_log_prob(q_vec.reshape(1, -1), self._gmm)[0]  # (K,)
         log_resp += np.log(self._gmm.weights_)
         log_resp -= logsumexp(log_resp)
         resp = np.exp(log_resp)  # (K,) — soft assignment of query to components
 
         # Score each stored text via full log-likelihood under each component:
         # score(i) = sum_k r(k|q) * log N(x_i | mu_k, Sigma_k)
-        # This accounts for both direction and covariance shape (Mahalanobis distance),
-        # unlike cosine similarity which only uses component means.
-        log_prob = self._gmm._estimate_log_prob(self._embeddings)  # (N, K)
+        log_prob = self._component_log_prob(self._embeddings, self._gmm)  # (N, K)
         scores = log_prob @ resp  # (N,)
 
         k = min(top_k, len(self._texts))
@@ -294,12 +299,23 @@ class GaussianBelief:
         if missing:
             raise ValueError(f"Missing keys in dict: {missing}")
 
+        texts = d["original_texts"]
+        if not isinstance(texts, list) or not all(isinstance(t, str) for t in texts):
+            raise ValueError("original_texts must be a list of strings.")
+
         means = np.array(d["means_"])
         covariances = np.array(d["covariances_"])
         weights = np.array(d["weights_"])
         precisions_chol = np.array(d["precisions_cholesky_"])
-        texts = d["original_texts"]
         K = len(weights)
+        D = d["embedding_dim"]
+
+        if means.shape != (K, D):
+            raise ValueError(f"means_ shape mismatch: expected ({K}, {D}), got {means.shape}")
+        if covariances.shape != (K, D, D):
+            raise ValueError(f"covariances_ shape mismatch: expected ({K}, {D}, {D}), got {covariances.shape}")
+        if precisions_chol.shape != (K, D, D):
+            raise ValueError(f"precisions_cholesky_ shape mismatch: expected ({K}, {D}, {D}), got {precisions_chol.shape}")
 
         belief = cls(n_components=d["n_components"], embedding_dim=d["embedding_dim"])
         belief._gmm = belief._build_gmm_from_params(means, covariances, weights, precisions_chol)
@@ -315,6 +331,32 @@ class GaussianBelief:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _component_log_prob(X: np.ndarray, gmm: "GaussianMixture") -> np.ndarray:
+        """Log probability of each sample under each GMM component (without mixing weights).
+
+        Stable replacement for the private ``gmm._estimate_log_prob(X)``.
+
+        Returns:
+            Array of shape (N, K).
+        """
+        means = gmm.means_               # (K, D)
+        prec_chol = gmm.precisions_cholesky_  # (K, D, D) upper triangular
+        n_samples, n_features = X.shape
+        n_components = len(means)
+
+        log_prob = np.empty((n_samples, n_components))
+        for k in range(n_components):
+            y = (X - means[k]) @ prec_chol[k]   # (N, D)
+            log_prob[:, k] = np.sum(y ** 2, axis=1)
+
+        log_det = np.array([
+            np.sum(np.log(np.maximum(np.diag(prec_chol[k]), 1e-300)))
+            for k in range(n_components)
+        ])
+
+        return -0.5 * (n_features * np.log(2 * np.pi) + log_prob) + log_det
 
     @staticmethod
     def _kl_gaussian(mu1: np.ndarray, sigma1: np.ndarray,
@@ -359,9 +401,18 @@ class GaussianBelief:
                     means[i], covs[i], means[j], covs[j]
                 )
                 if kl < kl_threshold:
-                    # Merge j into i (weighted average of means)
+                    # Moment-matching merge of j into i
                     w_total = weights[i] + weights[j]
-                    means[i] = (weights[i] * means[i] + weights[j] * means[j]) / w_total
+                    alpha_i = weights[i] / w_total
+                    alpha_j = weights[j] / w_total
+                    mean_merged = alpha_i * means[i] + alpha_j * means[j]
+                    diff_i = means[i] - mean_merged
+                    diff_j = means[j] - mean_merged
+                    covs[i] = (
+                        alpha_i * (covs[i] + np.outer(diff_i, diff_i))
+                        + alpha_j * (covs[j] + np.outer(diff_j, diff_j))
+                    )
+                    means[i] = mean_merged
                     weights[i] = w_total
                     removed[j] = True
 

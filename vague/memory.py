@@ -101,6 +101,8 @@ class BeliefMemory:
         """Serialize memory to a JSON file at path."""
         if not self.belief._fitted:
             raise ValueError("Memory must be fitted before saving.")
+        import os
+        path = os.path.realpath(path)
         data = self.belief.to_dict()
         data["_n_observations"] = self._n_observations
         with open(path, "w", encoding="utf-8") as f:
@@ -110,6 +112,8 @@ class BeliefMemory:
     @classmethod
     def load(cls, path: str) -> "BeliefMemory":
         """Deserialize a BeliefMemory from a JSON file."""
+        import os
+        path = os.path.realpath(path)
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         n_obs = data.pop("_n_observations", 0)
