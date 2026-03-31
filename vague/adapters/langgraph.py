@@ -84,18 +84,21 @@ def make_belief_graph(
 
     graph = StateGraph(dict)
 
-    # Register one node per agent
+    # Register one node per agent.
+    # agent_0 reads from "input"; subsequent agents read from "output"
+    # (the previous agent's response).
     for i, agent in enumerate(agents):
         name = f"agent_{i}"
+        input_key = "input" if i == 0 else "output"
 
-        def make_agent_node(a: BeliefStateAgent) -> Callable[[dict], dict]:
+        def make_agent_node(a: BeliefStateAgent, ik: str) -> Callable[[dict], dict]:
             def agent_node(state: dict) -> dict:
-                task = state.get("input", "")
+                task = state.get(ik, "")
                 response = a.act(task)
                 return {**state, "output": response}
             return agent_node
 
-        graph.add_node(name, make_agent_node(agent))
+        graph.add_node(name, make_agent_node(agent, input_key))
 
     # Sequential edges with optional belief-sharing steps
     for i in range(len(agents) - 1):

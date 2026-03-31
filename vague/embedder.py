@@ -10,8 +10,6 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-_MODEL_CACHE: dict[str, object] = {}
-
 
 def _is_apple_silicon() -> bool:
     return platform.system() == "Darwin" and platform.machine() == "arm64"
@@ -97,5 +95,5 @@ class Embedder:
     @staticmethod
     def _normalize(vectors: np.ndarray) -> np.ndarray:
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-        norms = np.where(norms == 0, 1.0, norms)
+        norms = np.where(norms < 1e-10, 1.0, norms)
         return vectors / norms
