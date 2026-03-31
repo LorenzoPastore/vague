@@ -223,14 +223,12 @@ class GaussianBelief:
         log_resp -= logsumexp(log_resp)
         resp = np.exp(log_resp)  # (K,) — soft assignment of query to components
 
-        # Score each stored text: weighted cosine similarity to GMM component means
-        # score(i) = sum_k r(k) * cos(x_i, mu_k)
-        # Since embeddings are unit-normalized: cos(x_i, mu_k) = x_i @ mu_k / ||mu_k||
-        mu_norms = np.linalg.norm(self._gmm.means_, axis=1, keepdims=True) + 1e-10
-        mu_normalized = self._gmm.means_ / mu_norms  # (K, D)
-        # self._embeddings: (N, D), mu_normalized: (K, D)
-        cos_sims = self._embeddings @ mu_normalized.T  # (N, K)
-        scores = cos_sims @ resp  # (N,) — GMM-weighted relevance score
+        # Score each stored text via full log-likelihood under each component:
+        # score(i) = sum_k r(k|q) * log N(x_i | mu_k, Sigma_k)
+        # This accounts for both direction and covariance shape (Mahalanobis distance),
+        # unlike cosine similarity which only uses component means.
+        log_prob = self._gmm._estimate_log_prob(self._embeddings)  # (N, K)
+        scores = log_prob @ resp  # (N,)
 
         k = min(top_k, len(self._texts))
         top_indices = np.argsort(scores)[::-1][:k]
