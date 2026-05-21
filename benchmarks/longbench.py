@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import random
 import re
 import time
+
+import numpy as np
 from collections import Counter
 from dataclasses import dataclass
 from typing import Callable
@@ -13,6 +17,46 @@ from typing import Callable
 from tqdm import tqdm
 
 from vague import BeliefMemory
+from vague.summary_belief import SummaryBelief
+
+
+# ---------------------------------------------------------------------------
+# LLM response cache — keyed on prompt hash, persisted to disk
+# ---------------------------------------------------------------------------
+
+class _LLMCache:
+    """Transparent disk cache for llm_fn calls.
+
+    Wraps any ``llm_fn`` and caches (prompt_hash → response) in a JSON file.
+    Cache hits skip the LLM entirely, making re-runs instantaneous.
+    """
+
+    def __init__(self, llm_fn: Callable[[str], str], cache_path: str) -> None:
+        self._llm_fn = llm_fn
+        self._path = cache_path
+        self._store: dict[str, str] = {}
+        if os.path.exists(cache_path):
+            with open(cache_path) as f:
+                self._store = json.load(f)
+
+    def __call__(self, prompt: str) -> str:
+        key = hashlib.sha256(prompt.encode()).hexdigest()
+        if key not in self._store:
+            self._last_hit = False
+            self._store[key] = self._llm_fn(prompt)
+            with open(self._path, "w") as f:
+                json.dump(self._store, f)
+        else:
+            self._last_hit = True
+        return self._store[key]
+
+    @property
+    def was_cache_hit(self) -> bool:
+        return getattr(self, "_last_hit", False)
+
+    @property
+    def cache_size(self) -> int:
+        return len(self._store)
 
 # ---------------------------------------------------------------------------
 # Token counting helper
@@ -185,7 +229,10 @@ def _get_question(sample: dict) -> str:
 class EvalResult:
     task: str
     method: str  # "vague" | "naive_rag" | "full_context"
-    f1_score: float
+    f1_score: float          # mean F1 across samples
+    f1_std: float            # standard deviation
+    f1_ci_low: float         # bootstrap 95% CI lower bound
+    f1_ci_high: float        # bootstrap 95% CI upper bound
     avg_input_tokens: int
     compression_ratio: float  # context_tokens / prompt_tokens; higher = more compression
     latency_ms: float
@@ -198,7 +245,9 @@ class EvalResult:
 
 class LongBenchEval:
     def __init__(self, llm_fn: Callable[[str], str], cache_dir: str = ".cache") -> None:
-        self.llm_fn = llm_fn
+        os.makedirs(cache_dir, exist_ok=True)
+        llm_cache_path = os.path.join(cache_dir, "llm_responses.json")
+        self.llm_fn = _LLMCache(llm_fn, llm_cache_path)
         self.cache_dir = cache_dir
         self._naive_rag: _NaiveRAG | None = None
 
@@ -222,7 +271,26 @@ class LongBenchEval:
         recalled = mem.recall(question, k=top_k)
         prompt = "\n".join(recalled) + f"\n\nQuestion: {question}\nAnswer:"
         prompt_tokens = _count_tokens(prompt)
-        # compression_ratio = how many times smaller the prompt is vs full context
+        cr = context_tokens / prompt_tokens if prompt_tokens > 0 else 1.0
+        return prompt, prompt_tokens, cr
+
+    def _run_summary_belief(
+        self,
+        context: str,
+        question: str,
+        n_components: int,
+        top_k: int = 3,
+    ) -> tuple[str, int, float]:
+        """SummaryBelief: each component carries an LLM-generated summary payload."""
+        chunks = _chunk_text(context, chunk_tokens=256)
+        mem = SummaryBelief(n_components=min(n_components, len(chunks)))
+        mem.fit_with_summaries(chunks, llm_fn=self.llm_fn)
+
+        context_tokens = _count_tokens(context)
+        results = mem.query(question, top_k=top_k)
+        summaries = [text for text, _ in results]
+        prompt = "\n".join(summaries) + f"\n\nQuestion: {question}\nAnswer:"
+        prompt_tokens = _count_tokens(prompt)
         cr = context_tokens / prompt_tokens if prompt_tokens > 0 else 1.0
         return prompt, prompt_tokens, cr
 
@@ -231,22 +299,28 @@ class LongBenchEval:
         context: str,
         question: str,
         top_k: int = 5,
-    ) -> tuple[str, int]:
+    ) -> tuple[str, int, float]:
         if self._naive_rag is None:
             self._naive_rag = _NaiveRAG()
+        context_tokens = _count_tokens(context)
         retrieved = self._naive_rag.retrieve(context, question, k=top_k)
         prompt = "\n".join(retrieved) + f"\n\nQuestion: {question}\nAnswer:"
-        return prompt, _count_tokens(prompt)
+        prompt_tokens = _count_tokens(prompt)
+        cr = context_tokens / prompt_tokens if prompt_tokens > 0 else 1.0
+        return prompt, prompt_tokens, cr
 
     def _run_full_context(
         self,
         context: str,
         question: str,
         max_context_tokens: int,
-    ) -> tuple[str, int]:
+    ) -> tuple[str, int, float]:
+        context_tokens = _count_tokens(context)
         truncated = _truncate_to_tokens(context, max_context_tokens)
         prompt = truncated + f"\n\nQuestion: {question}\nAnswer:"
-        return prompt, _count_tokens(prompt)
+        prompt_tokens = _count_tokens(prompt)
+        cr = context_tokens / prompt_tokens if prompt_tokens > 0 else 1.0
+        return prompt, prompt_tokens, cr
 
     # ------------------------------------------------------------------
     # Public API
@@ -259,11 +333,14 @@ class LongBenchEval:
         n_components: int = 32,
         n_samples: int = 200,
         max_context_tokens: int = 4096,
+        top_k: int = 5,
+        bootstrap_resamples: int = 1000,
+        seed: int = 42,
     ) -> EvalResult:
-        if method not in ("vague", "naive_rag", "full_context"):
+        if method not in ("vague", "naive_rag", "full_context", "summary_belief"):
             raise ValueError(f"Unknown method '{method}'")
 
-        samples = _load_dataset(task, self.cache_dir, n_samples)
+        samples = _load_dataset(task, self.cache_dir, n_samples, seed=seed)
 
         f1_scores: list[float] = []
         token_counts: list[int] = []
@@ -280,16 +357,19 @@ class LongBenchEval:
             t0 = time.perf_counter()
 
             if method == "vague":
-                prompt, n_tok, cr = self._run_vague(context, question, n_components)
+                prompt, n_tok, cr = self._run_vague(context, question, n_components, top_k=top_k)
             elif method == "naive_rag":
-                prompt, n_tok = self._run_naive_rag(context, question)
-                cr = 1.0
+                prompt, n_tok, cr = self._run_naive_rag(context, question, top_k=top_k)
+            elif method == "summary_belief":
+                prompt, n_tok, cr = self._run_summary_belief(context, question, n_components, top_k=top_k)
             else:  # full_context
-                prompt, n_tok = self._run_full_context(context, question, max_context_tokens)
-                cr = 1.0
+                prompt, n_tok, cr = self._run_full_context(context, question, max_context_tokens)
 
             prediction = self.llm_fn(prompt)
+            # Exclude cache hits from latency (they measure dict lookup, not inference)
             latency_ms = (time.perf_counter() - t0) * 1000
+            if self.llm_fn.was_cache_hit:
+                latency_ms = float("nan")
 
             f1 = _best_f1(prediction, answers)
             f1_scores.append(f1)
@@ -298,22 +378,53 @@ class LongBenchEval:
             latencies.append(latency_ms)
 
         n = len(f1_scores)
+        arr = np.array(f1_scores) if f1_scores else np.array([0.0])
+
+        # Bootstrap 95% CI
+        rng = np.random.default_rng(seed)
+        boot_means = np.array([
+            rng.choice(arr, size=len(arr), replace=True).mean()
+            for _ in range(bootstrap_resamples)
+        ])
+        ci_low, ci_high = float(np.percentile(boot_means, 2.5)), float(np.percentile(boot_means, 97.5))
+
         return EvalResult(
             task=task,
             method=method,
-            f1_score=sum(f1_scores) / n if n else 0.0,
+            f1_score=float(arr.mean()),
+            f1_std=float(arr.std()),
+            f1_ci_low=ci_low,
+            f1_ci_high=ci_high,
             avg_input_tokens=int(sum(token_counts) / n) if n else 0,
-            compression_ratio=sum(compression_ratios) / n if n else 1.0,
-            latency_ms=sum(latencies) / n if n else 0.0,
+            compression_ratio=float(np.mean(compression_ratios)) if compression_ratios else 1.0,
+            latency_ms=float(np.nanmean(latencies)) if latencies else 0.0,
             n_samples=n,
         )
+
+    #: Default methods evaluated by :meth:`compare_all`.
+    DEFAULT_METHODS: tuple[str, ...] = (
+        "vague",
+        "naive_rag",
+        "full_context",
+        "summary_belief",
+    )
 
     def compare_all(
         self,
         task: str,
         n_samples: int = 200,
+        methods: tuple[str, ...] | list[str] | None = None,
     ) -> list[EvalResult]:
-        results = []
-        for method in ("vague", "naive_rag", "full_context"):
-            results.append(self.run(task, method, n_samples=n_samples))
-        return results
+        """Evaluate ``task`` across multiple methods.
+
+        Args:
+            task: LongBench task name (e.g. ``"qasper"``, ``"hotpotqa"``).
+            n_samples: Number of examples to evaluate per method.
+            methods: Method names to run. Defaults to ``DEFAULT_METHODS``,
+                which includes the experimental ``summary_belief`` method —
+                pass an explicit tuple (e.g. ``("vague", "naive_rag",
+                "full_context")``) to skip it and avoid the extra LLM calls
+                it incurs at fit-time.
+        """
+        chosen = tuple(methods) if methods is not None else self.DEFAULT_METHODS
+        return [self.run(task, m, n_samples=n_samples) for m in chosen]
