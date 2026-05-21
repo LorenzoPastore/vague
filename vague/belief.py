@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from scipy.special import logsumexp
@@ -12,6 +12,19 @@ from sklearn.mixture import GaussianMixture
 from vague.embedder import Embedder
 
 logger = logging.getLogger(__name__)
+
+_MLX_AVAILABLE: bool | None = None
+
+
+def _check_mlx() -> bool:
+    global _MLX_AVAILABLE
+    if _MLX_AVAILABLE is None:
+        try:
+            import mlx.core  # noqa: F401
+            _MLX_AVAILABLE = True
+        except ImportError:
+            _MLX_AVAILABLE = False
+    return _MLX_AVAILABLE
 
 
 class GaussianBelief:
@@ -25,29 +38,49 @@ class GaussianBelief:
         self,
         n_components: int = 32,
         embedding_dim: int = 384,
+        backend: Literal["sklearn", "mlx"] = "sklearn",
     ) -> None:
         """Initialize GaussianBelief.
 
         Args:
             n_components: Number of Gaussian components in the mixture.
             embedding_dim: Dimensionality of the embedding space.
+            backend: Computation backend. ``"sklearn"`` (default) uses CPU via
+                scikit-learn EM. ``"mlx"`` uses Apple Silicon GPU via MLX for
+                the log-probability computation (requires ``mlx`` to be
+                installed); fitting still falls back to sklearn EM and then
+                converts the result to MLX arrays.
 
         Raises:
-            ValueError: If n_components < 1 or embedding_dim < 1.
+            ValueError: If n_components < 1, embedding_dim < 1, or backend is
+                unsupported.
+            ImportError: If backend="mlx" but mlx is not installed.
         """
         if n_components < 1:
             raise ValueError("n_components must be >= 1.")
         if embedding_dim < 1:
             raise ValueError("embedding_dim must be >= 1.")
+        if backend not in ("sklearn", "mlx"):
+            raise ValueError("backend must be 'sklearn' or 'mlx'.")
+        if backend == "mlx" and not _check_mlx():
+            raise ImportError(
+                "MLX is not installed. Install it with: pip install mlx"
+            )
 
         self.n_components = n_components
         self.embedding_dim = embedding_dim
+        self.backend = backend
 
         self._embedder = Embedder()
         self._gmm: GaussianMixture | None = None
         self._texts: list[str] = []
         self._embeddings: np.ndarray | None = None  # shape (N, D)
         self._fitted: bool = False
+
+        # MLX arrays — populated when backend="mlx"
+        self._mlx_means = None       # (K, D)
+        self._mlx_prec_chol = None   # (K, D, D)
+        self._mlx_log_det = None     # (K,)
 
     # ------------------------------------------------------------------
     # Public API
@@ -80,6 +113,8 @@ class GaussianBelief:
         )
         self._gmm.fit(self._embeddings)
         self._fitted = True
+        if self.backend == "mlx":
+            self._sync_mlx_arrays()
         logger.debug("Fitted GMM with %d components on %d texts.", n_components, len(texts))
         return self
 
@@ -137,6 +172,9 @@ class GaussianBelief:
         self._texts.append(new_text)
         self._embeddings = np.vstack([self._embeddings, x_new.reshape(1, -1)])
 
+        if self.backend == "mlx":
+            self._sync_mlx_arrays()
+
         logger.debug("Updated component %d with lr=%.4f.", k, lr)
         return self
 
@@ -183,16 +221,19 @@ class GaussianBelief:
         weights = weights[keep_mask]
         weights /= weights.sum()
 
-        # Build merged belief
+        # Build merged belief — propagate backend from self
         merged = GaussianBelief(
             n_components=len(weights),
             embedding_dim=self.embedding_dim,
+            backend=self.backend,
         )
         merged._texts = self._texts + other._texts
         merged._embeddings = np.vstack([self._embeddings, other._embeddings])
 
         merged._gmm = self._build_gmm_from_params(means, covs, weights)
         merged._fitted = True
+        if self.backend == "mlx":
+            merged._sync_mlx_arrays()
         logger.debug(
             "Merged beliefs: %d + %d → %d components.",
             len(self._gmm.weights_),
@@ -332,15 +373,22 @@ class GaussianBelief:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _component_log_prob(X: np.ndarray, gmm: "GaussianMixture") -> np.ndarray:
+    def _component_log_prob(self, X: np.ndarray, gmm: "GaussianMixture") -> np.ndarray:
         """Log probability of each sample under each GMM component (without mixing weights).
 
         Stable replacement for the private ``gmm._estimate_log_prob(X)``.
+        Dispatches to MLX (GPU Metal) when backend="mlx" and MLX arrays are ready.
 
         Returns:
             Array of shape (N, K).
         """
+        if self.backend == "mlx" and self._mlx_means is not None:
+            return self._component_log_prob_mlx(X)
+        return GaussianBelief._component_log_prob_numpy(X, gmm)
+
+    @staticmethod
+    def _component_log_prob_numpy(X: np.ndarray, gmm: "GaussianMixture") -> np.ndarray:
+        """Numpy CPU implementation of per-component log-probability."""
         means = gmm.means_               # (K, D)
         prec_chol = gmm.precisions_cholesky_  # (K, D, D) upper triangular
         n_samples, n_features = X.shape
@@ -357,6 +405,58 @@ class GaussianBelief:
         ])
 
         return -0.5 * (n_features * np.log(2 * np.pi) + log_prob) + log_det
+
+    def _component_log_prob_mlx(self, X: np.ndarray) -> np.ndarray:
+        """MLX (Apple Silicon GPU) implementation of per-component log-probability.
+
+        Computes the same quantity as ``_component_log_prob_numpy`` but using
+        batch matrix operations dispatched to the Metal GPU via MLX.
+
+        Returns:
+            numpy array of shape (N, K).
+        """
+        import mlx.core as mx
+
+        n_features = X.shape[1]
+        X_mx = mx.array(X.astype(np.float32))          # (N, D)
+        means = self._mlx_means                          # (K, D)
+        prec_chol = self._mlx_prec_chol                 # (K, D, D)
+        log_det = self._mlx_log_det                      # (K,)
+
+        # diff[k] = X - means[k]  →  shape (K, N, D)
+        diff = X_mx[None, :, :] - means[:, None, :]     # (K, N, D)
+
+        # y[k] = diff[k] @ prec_chol[k]  →  (K, N, D)
+        # matmul: (K, N, D) @ (K, D, D) = (K, N, D)
+        y = mx.matmul(diff, prec_chol)                   # (K, N, D)
+
+        # mahal[k, n] = sum_d y[k,n,d]^2  →  (K, N)
+        mahal = mx.sum(y * y, axis=2)                    # (K, N)
+
+        # log_prob: (N, K)
+        log_prob = (-0.5 * (n_features * np.log(2 * np.pi) + mahal) + log_det[:, None]).T
+
+        mx.eval(log_prob)
+        return np.array(log_prob, dtype=np.float64)
+
+    def _sync_mlx_arrays(self) -> None:
+        """Convert current GMM numpy arrays to MLX for GPU dispatch.
+
+        Called after fit() or update() when backend="mlx".
+        """
+        import mlx.core as mx
+
+        prec_chol = self._gmm.precisions_cholesky_      # (K, D, D)
+        means = self._gmm.means_                          # (K, D)
+
+        self._mlx_means = mx.array(means.astype(np.float32))
+        self._mlx_prec_chol = mx.array(prec_chol.astype(np.float32))
+        # log |L_k| = sum of log(diag(L_k))
+        log_det = np.array([
+            np.sum(np.log(np.maximum(np.diag(prec_chol[k]), 1e-300)))
+            for k in range(len(means))
+        ])
+        self._mlx_log_det = mx.array(log_det.astype(np.float32))
 
     @staticmethod
     def _kl_gaussian(mu1: np.ndarray, sigma1: np.ndarray,

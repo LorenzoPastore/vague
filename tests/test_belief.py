@@ -207,3 +207,46 @@ def test_compression_ratio_positive(fitted_belief: GaussianBelief) -> None:
     ratio = fitted_belief.compression_ratio()
     assert isinstance(ratio, float)
     assert ratio > 0, f"Expected compression_ratio > 0, got {ratio}"
+
+
+# ---------------------------------------------------------------------------
+# MLX backend (Apple Silicon GPU) — skipped if mlx is not installed
+# ---------------------------------------------------------------------------
+
+
+def test_mlx_backend_parity_with_sklearn(fitted_belief: GaussianBelief) -> None:
+    """The MLX backend must produce log-probabilities numerically equivalent
+    to the sklearn backend on the same fitted GMM.
+
+    Skipped automatically on systems without ``mlx`` installed (non-Apple-Silicon
+    or environments where the optional ``vague[mlx]`` extra is missing).
+    """
+    pytest.importorskip("mlx.core")
+
+    # Reuse the sklearn-fitted GMM and dispatch the same X through both paths.
+    X = fitted_belief._embeddings
+    gmm = fitted_belief._gmm
+
+    log_prob_np = GaussianBelief._component_log_prob_numpy(X, gmm)
+
+    # Build an MLX-backed twin from the same fitted GMM (avoid re-fitting EM
+    # which is non-deterministic across runs).
+    gb_mlx = GaussianBelief(
+        n_components=fitted_belief.n_components,
+        embedding_dim=fitted_belief.embedding_dim,
+        backend="mlx",
+    )
+    gb_mlx._gmm = gmm
+    gb_mlx._embeddings = X
+    gb_mlx._texts = fitted_belief._texts
+    gb_mlx._fitted = True
+    gb_mlx._sync_mlx_arrays()
+
+    log_prob_mlx = gb_mlx._component_log_prob_mlx(X)
+
+    assert log_prob_mlx.shape == log_prob_np.shape, (
+        f"shape mismatch: {log_prob_mlx.shape} vs {log_prob_np.shape}"
+    )
+    # MLX runs in float32, sklearn in float64. Mahalanobis distances are large
+    # (~1e5–1e6) so we use rtol-based tolerance; absolute differences scale.
+    np.testing.assert_allclose(log_prob_mlx, log_prob_np, rtol=5e-3)
