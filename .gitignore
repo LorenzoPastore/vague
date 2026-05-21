@@ -23,3 +23,6 @@ build/
 # generated
 benchmarks/results/
 notebooks/.ipynb_checkpoints/
+
+# scratch / exploration notebooks (kept locally only)
+notebooks/exploration*.ipynb
