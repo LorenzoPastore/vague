@@ -1,23 +1,33 @@
-"""Benchmark runner: 3 runs × 3 tasks × n=200, mlx_lm Qwen3-8B-4bit.
+"""Benchmark runner for LongBench using local mlx_lm models.
 
 Apple Silicon only. Install the optional extra: ``pip install -e .[mlx]``.
 
-Usage (from repo root):
+Default config: 3 runs × 3 tasks × n=200, Qwen3-8B-4bit, all 4 methods
+(vague, naive_rag, full_context, summary_belief).
+
+Usage::
+
+    # full default run
     python benchmarks/run_mlx_benchmark.py
+
+    # smoke test: 1 task, 10 samples, 1 run, all methods
+    python benchmarks/run_mlx_benchmark.py --tasks qasper --n-samples 10 --n-runs 1
+
+    # quick demo-grade reduced run
+    python benchmarks/run_mlx_benchmark.py --n-samples 50 --n-runs 1
+
+    # exclude experimental summary_belief
+    python benchmarks/run_mlx_benchmark.py --methods vague naive_rag full_context
 
 Outputs:
     benchmarks/results_mlx.json  — raw per-run results
     benchmarks/summary_mlx.json  — aggregated per (task, method)
     Prints summary table with mean±std and 95% bootstrap CI to stdout.
-
-Note: METHODS deliberately excludes the experimental ``summary_belief``
-to keep the established-methods comparison reproducible at this cost.
-Run a separate pass to evaluate SummaryBelief, e.g. by calling
-``LongBenchEval.compare_all`` directly (its DEFAULT_METHODS includes it).
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -43,6 +53,30 @@ def bootstrap_ci(scores: list[float], n_boot: int = 1000, alpha: float = 0.05) -
 # Main
 # ---------------------------------------------------------------------------
 
+DEFAULT_TASKS = ["qasper", "hotpotqa", "multifieldqa_en"]
+DEFAULT_METHODS = ["vague", "naive_rag", "full_context", "summary_belief"]
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    p.add_argument("--model", default="mlx-community/Qwen3-8B-4bit",
+                   help="HF repo id or alias for the MLX model.")
+    p.add_argument("--tasks", nargs="+", default=DEFAULT_TASKS,
+                   help="LongBench tasks to evaluate.")
+    p.add_argument("--methods", nargs="+", default=DEFAULT_METHODS,
+                   choices=["vague", "naive_rag", "full_context", "summary_belief"],
+                   help="Methods to evaluate.")
+    p.add_argument("--n-samples", type=int, default=200,
+                   help="Samples per (task, method) per run.")
+    p.add_argument("--n-runs", type=int, default=3,
+                   help="Independent runs (for std + bootstrap CI).")
+    p.add_argument("--max-tokens", type=int, default=64,
+                   help="LLM max output tokens.")
+    p.add_argument("--tag", default="",
+                   help="Optional suffix for output filenames (e.g. 'smoke').")
+    return p.parse_args()
+
+
 def main() -> None:
     repo_root = Path(__file__).parent.parent
     sys.path.insert(0, str(repo_root))
@@ -50,20 +84,23 @@ def main() -> None:
     from vague.adapters.mlx_lm import mlx_lm_fn
     from benchmarks.longbench import LongBenchEval
 
-    MODEL = "mlx-community/Qwen3-8B-4bit"
-    TASKS = ["qasper", "hotpotqa", "multifieldqa_en"]
-    METHODS = ["vague", "naive_rag", "full_context"]
-    N_SAMPLES = 200
-    N_RUNS = 3
+    args = _parse_args()
+    MODEL = args.model
+    TASKS = args.tasks
+    METHODS = args.methods
+    N_SAMPLES = args.n_samples
+    N_RUNS = args.n_runs
     CACHE_DIR = str(repo_root / ".cache")
+    suffix = f"_{args.tag}" if args.tag else ""
 
     print(f"[benchmark] Model: {MODEL}")
     print(f"[benchmark] Tasks: {TASKS}")
+    print(f"[benchmark] Methods: {METHODS}")
     print(f"[benchmark] N_SAMPLES={N_SAMPLES}, N_RUNS={N_RUNS}")
     print()
 
     # Build llm_fn once — model loads lazily on first call
-    llm = mlx_lm_fn(MODEL, max_tokens=64)
+    llm = mlx_lm_fn(MODEL, max_tokens=args.max_tokens)
 
     # raw_results[task][method] = list of (f1, avg_tokens, compression) per run
     raw_results: dict[str, dict[str, list[dict]]] = {
@@ -96,7 +133,7 @@ def main() -> None:
         print()
 
     # Save raw results
-    out_path = repo_root / "benchmarks" / "results_mlx.json"
+    out_path = repo_root / "benchmarks" / f"results_mlx{suffix}.json"
     with open(out_path, "w") as f:
         json.dump(raw_results, f, indent=2)
     print(f"[benchmark] Raw results saved → {out_path}")
@@ -143,7 +180,7 @@ def main() -> None:
     print("=" * 90)
 
     # Save summary
-    summary_path = repo_root / "benchmarks" / "summary_mlx.json"
+    summary_path = repo_root / "benchmarks" / f"summary_mlx{suffix}.json"
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"[benchmark] Summary saved → {summary_path}")
