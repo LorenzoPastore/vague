@@ -12,7 +12,7 @@
 
 The headline value is **not retrieval quality**. It is the *principled probabilistic interface*: belief states **compose** (merge two agents' memories as a weighted mixture), **update incrementally** (single-text online update without re-fitting the GMM), and **transfer between agents** as parameters of the mixture rather than as raw documents.
 
-Repository: `https://github.com/lorenzopastore/vague` (local path: `.`).
+Repository: `https://github.com/lorenzopastore/vague`.
 Install: `pip install -e .` (editable). Apple Silicon GPU acceleration: `pip install -e .[mlx]`.
 
 ---
