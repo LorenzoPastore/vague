@@ -20,6 +20,8 @@ def anthropic_fn(
     model: str = "claude-haiku-4-5-20251001",
     max_tokens: int = 256,
     api_key: str | None = None,
+    max_retries: int = 10,
+    timeout: float = 120.0,
 ) -> Callable[[str], str]:
     """Return an ``llm_fn``-compatible callable backed by Claude API.
 
@@ -27,13 +29,21 @@ def anthropic_fn(
         model: Anthropic model ID. Defaults to Claude Haiku (fastest/cheapest).
         max_tokens: Maximum tokens to generate.
         api_key: Anthropic API key. If None, reads from ANTHROPIC_API_KEY env var.
+        max_retries: How many times the SDK retries on 429 / 5xx / network
+            errors (default 10, suitable for long benchmark runs that may
+            saturate the per-minute token quota).
+        timeout: Per-request timeout in seconds (default 120s).
 
     Returns:
         A callable ``(prompt: str) -> str``.
     """
     import anthropic
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        max_retries=max_retries,
+        timeout=timeout,
+    )
 
     def llm_fn(prompt: str) -> str:
         r = client.messages.create(

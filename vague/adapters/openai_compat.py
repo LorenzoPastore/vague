@@ -49,6 +49,8 @@ def openai_compatible_fn(
     temperature: float = 0.0,
     strip_thinking: bool = True,
     extra_headers: dict | None = None,
+    max_retries: int = 10,
+    timeout: float = 120.0,
 ) -> Callable[[str], str]:
     """Return an ``llm_fn``-compatible callable backed by an OpenAI-compatible API.
 
@@ -70,7 +72,12 @@ def openai_compatible_fn(
     """
     from openai import OpenAI
 
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    client = OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        max_retries=max_retries,
+        timeout=timeout,
+    )
     _think_re = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
 
     def llm_fn(prompt: str) -> str:
