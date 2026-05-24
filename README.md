@@ -140,25 +140,30 @@ graph.add_edge("recall", "generate")
 
 ## Benchmark
 
-Evaluated on [LongBench](https://github.com/THUDM/LongBench) — 3 tasks, n=50 samples each, `claude-3-haiku`.
+Evaluated on [LongBench](https://github.com/THUDM/LongBench) — 3 tasks, n=50 samples per (task, method), single run, `mlx-community/Qwen3-8B-4bit` (local, Apple Silicon via MLX).
 
 | Task | Method | F1 | Avg tokens | Compression |
 |---|---|---:|---:|---:|
-| qasper | Full context | 0.115 | 3 748 | 1.0x |
-| qasper | Naive RAG | 0.124 | 1 706 | 1.0x |
-| qasper | **Vague** | **0.117** | **1 721** | **2.9x** |
-| hotpotqa | Full context | 0.033 | 4 120 | 1.0x |
-| hotpotqa | Naive RAG | 0.035 | 1 764 | 1.0x |
-| hotpotqa | **Vague** | **0.033** | **1 782** | **7.3x** |
-| multifieldqa_en | Full context | 0.124 | 3 768 | 1.0x |
-| multifieldqa_en | Naive RAG | 0.136 | 2 232 | 1.0x |
-| multifieldqa_en | **Vague** | **0.131** | **2 257** | **3.6x** |
+| hotpotqa | Full context | 0.036 | 4120 | 3.1x |
+| hotpotqa | Naive RAG | 0.035 | 1764 | 7.4x |
+| hotpotqa | **Vague (GMM)** | 0.035 | 1734 | 7.6x |
+| hotpotqa | **SummaryBelief** | 0.059 | 333 | 38.8x |
+| multifieldqa_en | Full context | 0.163 | 3768 | 1.8x |
+| multifieldqa_en | Naive RAG | 0.160 | 2232 | 3.6x |
+| multifieldqa_en | **Vague (GMM)** | 0.148 | 2229 | 3.7x |
+| multifieldqa_en | **SummaryBelief** | 0.242 | 321 | 22.3x |
+| qasper | Full context | 0.122 | 3748 | 1.3x |
+| qasper | Naive RAG | 0.130 | 1706 | 2.9x |
+| qasper | **Vague (GMM)** | 0.124 | 1729 | 2.8x |
+| qasper | **SummaryBelief** | 0.168 | 331 | 14.9x |
 
-Across all three tasks, Vague matches dense retrieval F1 within noise while compressing the injected context by **2.9–7.3x**. On `multifieldqa_en` (long multi-document QA), Vague outperforms full-context injection by +0.007 F1 — the GMM representation actively filters noise.
+Source: `benchmarks/summary_mlx_reduced.json`.
+
+**SummaryBelief is the key finding.** GaussianBelief alone matches Naive RAG within F1 noise (its value is the principled probabilistic interface — merge, update, transfer — not a retrieval-quality win). SummaryBelief, by storing one LLM-generated summary per Gaussian component instead of raw chunks, beats every baseline on every task while compressing the injected context by **15–40×**.
 
 ![Multi-task benchmark](docs/multitask_benchmark.png)
 
-The F1 numbers are not the differentiator. The differentiator is the **representation**: belief states compose, update incrementally, and transfer between agents without exposing raw documents.
+The cost is asymmetric: SummaryBelief makes K extra LLM calls during the fit phase (once), but every subsequent query injects far fewer tokens — favorable any time the corpus is queried more than ~K times.
 
 ### Needle-in-a-haystack
 
@@ -167,6 +172,7 @@ Recall rate of a planted fact at varying context lengths and positions:
 ![Needle heatmap](docs/needle_heatmap.png)
 
 Vague retrieves reliably up to ~2k tokens. At 4k+ the GMM begins to saturate — increasing `n_components` recovers recall at the cost of more parameters.
+
 
 ---
 

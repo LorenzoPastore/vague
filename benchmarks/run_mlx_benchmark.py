@@ -236,17 +236,27 @@ def main() -> None:
 
     summary: dict[str, dict[str, dict]] = {}
 
-    for task in TASKS:
+    # Aggregate over every (task, method) present in the checkpoint, not just
+    # the subset run in this invocation — otherwise running a single method on
+    # a single task would wipe the previously computed summary for everything
+    # else. The checkpoint is the source of truth.
+    for task in sorted(raw_results.keys()):
         summary[task] = {}
-        for method in METHODS:
+        for method in sorted(raw_results[task].keys()):
             runs = raw_results[task][method]
+            if not runs:
+                continue
             f1_vals = [r["f1"] for r in runs]
             tok_vals = [r["avg_tokens"] for r in runs]
             cr_vals = [r["compression"] for r in runs]
 
             f1_mean = float(np.mean(f1_vals))
             f1_std = float(np.std(f1_vals, ddof=1)) if len(f1_vals) > 1 else 0.0
-            ci_lo, ci_hi = bootstrap_ci(f1_vals * N_RUNS)  # replicate for bootstrap stability
+            # Bootstrap CI is only meaningful when n_runs > 1.
+            if len(f1_vals) > 1:
+                ci_lo, ci_hi = bootstrap_ci(f1_vals)
+            else:
+                ci_lo, ci_hi = f1_mean, f1_mean
             tok_mean = float(np.mean(tok_vals))
             cr_mean = float(np.mean(cr_vals))
 
@@ -256,6 +266,7 @@ def main() -> None:
                 "ci_95": [ci_lo, ci_hi],
                 "avg_tokens": tok_mean,
                 "compression": cr_mean,
+                "n_runs": len(f1_vals),
             }
 
             print(

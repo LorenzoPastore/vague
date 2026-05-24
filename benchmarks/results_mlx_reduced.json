@@ -1,0 +1,128 @@
+{
+  "qasper": {
+    "vague": [
+      {
+        "f1": 0.12444214730691915,
+        "avg_tokens": 1729,
+        "compression": 2.8460537288602916,
+        "latency_ms": NaN,
+        "n_samples": 50,
+        "wall_s": 13.177884125034325
+      }
+    ],
+    "naive_rag": [
+      {
+        "f1": 0.12965711173652988,
+        "avg_tokens": 1706,
+        "compression": 2.879455065660811,
+        "latency_ms": NaN,
+        "n_samples": 50,
+        "wall_s": 3.7804477080935612
+      }
+    ],
+    "full_context": [
+      {
+        "f1": 0.1223279846446427,
+        "avg_tokens": 3748,
+        "compression": 1.2816175175670752,
+        "latency_ms": NaN,
+        "n_samples": 50,
+        "wall_s": 0.14758887502830476
+      }
+    ],
+    "summary_belief": [
+      {
+        "f1": 0.16816240882978092,
+        "avg_tokens": 331,
+        "compression": 14.853113578357902,
+        "latency_ms": 19802.84488080535,
+        "n_samples": 50,
+        "wall_s": 990.2101979579311
+      }
+    ]
+  },
+  "hotpotqa": {
+    "vague": [
+      {
+        "f1": 0.035399799454575075,
+        "avg_tokens": 1734,
+        "compression": 7.55770724725688,
+        "latency_ms": NaN,
+        "n_samples": 50,
+        "wall_s": 30.45136537507642
+      }
+    ],
+    "naive_rag": [
+      {
+        "f1": 0.0352097818612259,
+        "avg_tokens": 1764,
+        "compression": 7.394063083200693,
+        "latency_ms": NaN,
+        "n_samples": 50,
+        "wall_s": 3.1306572080357
+      }
+    ],
+    "full_context": [
+      {
+        "f1": 0.03573794249248387,
+        "avg_tokens": 4120,
+        "compression": 3.140829717624349,
+        "latency_ms": NaN,
+        "n_samples": 50,
+        "wall_s": 0.3499629159923643
+      }
+    ],
+    "summary_belief": [
+      {
+        "f1": 0.05875013546154218,
+        "avg_tokens": 333,
+        "compression": 38.75351168349405,
+        "latency_ms": 48487.89235812728,
+        "n_samples": 50,
+        "wall_s": 1561.8254499160685
+      }
+    ]
+  },
+  "multifieldqa_en": {
+    "vague": [
+      {
+        "f1": 0.14839808580809816,
+        "avg_tokens": 2229,
+        "compression": 3.722259640706809,
+        "latency_ms": NaN,
+        "n_samples": 50,
+        "wall_s": 12.091180542018265
+      }
+    ],
+    "naive_rag": [
+      {
+        "f1": 0.1595905664419402,
+        "avg_tokens": 2232,
+        "compression": 3.6227801329267906,
+        "latency_ms": NaN,
+        "n_samples": 50,
+        "wall_s": 1.6512002919334918
+      }
+    ],
+    "full_context": [
+      {
+        "f1": 0.16264373680064304,
+        "avg_tokens": 3768,
+        "compression": 1.8358266211945762,
+        "latency_ms": NaN,
+        "n_samples": 50,
+        "wall_s": 0.22136712493374944
+      }
+    ],
+    "summary_belief": [
+      {
+        "f1": 0.24196930662231403,
+        "avg_tokens": 321,
+        "compression": 22.345375439398612,
+        "latency_ms": 28388.073094372106,
+        "n_samples": 50,
+        "wall_s": 1391.2254659580067
+      }
+    ]
+  }
+}
