@@ -99,19 +99,44 @@ def main() -> None:
     print(f"[benchmark] N_SAMPLES={N_SAMPLES}, N_RUNS={N_RUNS}")
     print()
 
+    # Resume support: load any existing checkpoint and skip completed cells.
+    out_path = repo_root / "benchmarks" / f"results_mlx{suffix}.json"
+    if out_path.exists():
+        with open(out_path) as f:
+            raw_results: dict[str, dict[str, list[dict]]] = json.load(f)
+        # Ensure schema covers all current (task, method) keys.
+        for t in TASKS:
+            raw_results.setdefault(t, {})
+            for m in METHODS:
+                raw_results[t].setdefault(m, [])
+        completed = sum(
+            len(raw_results[t][m]) for t in TASKS for m in METHODS
+        )
+        print(f"[benchmark] Resuming from checkpoint → {out_path} "
+              f"({completed} cells already done)\n")
+    else:
+        raw_results = {t: {m: [] for m in METHODS} for t in TASKS}
+
+    def _save_checkpoint() -> None:
+        with open(out_path, "w") as f:
+            json.dump(raw_results, f, indent=2)
+
     # Build llm_fn once — model loads lazily on first call
     llm = mlx_lm_fn(MODEL, max_tokens=args.max_tokens)
-
-    # raw_results[task][method] = list of (f1, avg_tokens, compression) per run
-    raw_results: dict[str, dict[str, list[dict]]] = {
-        t: {m: [] for m in METHODS} for t in TASKS
-    }
 
     for run_idx in range(N_RUNS):
         print(f"=== Run {run_idx + 1}/{N_RUNS} ===")
         eval_ = LongBenchEval(llm_fn=llm, cache_dir=CACHE_DIR)
         for task in TASKS:
             for method in METHODS:
+                if len(raw_results[task][method]) > run_idx:
+                    prev = raw_results[task][method][run_idx]
+                    print(
+                        f"  {task:20s} | {method:12s} | "
+                        f"F1={prev['f1']:.4f} | tokens={prev['avg_tokens']:.0f}"
+                        f" | compression={prev['compression']:.1f}x | (cached)"
+                    )
+                    continue
                 t0 = time.perf_counter()
                 result = eval_.run(task, method, n_samples=N_SAMPLES)
                 elapsed = time.perf_counter() - t0
@@ -123,6 +148,7 @@ def main() -> None:
                     "n_samples": result.n_samples,
                     "wall_s": elapsed,
                 })
+                _save_checkpoint()
                 print(
                     f"  {task:20s} | {method:12s} | "
                     f"F1={result.f1_score:.4f} | "
@@ -132,10 +158,6 @@ def main() -> None:
                 )
         print()
 
-    # Save raw results
-    out_path = repo_root / "benchmarks" / f"results_mlx{suffix}.json"
-    with open(out_path, "w") as f:
-        json.dump(raw_results, f, indent=2)
     print(f"[benchmark] Raw results saved → {out_path}")
     print()
 
