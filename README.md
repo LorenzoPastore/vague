@@ -151,15 +151,15 @@ Sources: `benchmarks/summary_mlx_reduced.json`, `benchmarks/summary_anthropic_re
 | qasper | Full context | 0.122 | 0.182 | 3748 | 1.3x |
 | qasper | Naive RAG | 0.130 | 0.192 | 1706 | 2.9x |
 | qasper | **Vague (GMM)** | 0.124 | 0.186 | 1729 | 2.8x |
-| qasper | **SummaryBelief** | **0.168** | 0.156 | **331** | **14.9x** |
+| qasper | **SummaryBelief** | **0.168** | 0.161 | **331** | **14.9x** |
 | hotpotqa | Full context | 0.036 | 0.045 | 4120 | 3.1x |
 | hotpotqa | Naive RAG | 0.035 | 0.056 | 1764 | 7.4x |
 | hotpotqa | **Vague (GMM)** | 0.035 | 0.044 | 1734 | 7.6x |
-| hotpotqa | **SummaryBelief** | **0.059** | 0.049 | **333** | **38.8x** |
+| hotpotqa | **SummaryBelief** | **0.059** | 0.047 | **333** | **38.8x** |
 | multifieldqa_en | Full context | 0.163 | 0.255 | 3768 | 1.8x |
 | multifieldqa_en | Naive RAG | 0.160 | 0.260 | 2232 | 3.6x |
 | multifieldqa_en | **Vague (GMM)** | 0.148 | 0.248 | 2229 | 3.7x |
-| multifieldqa_en | **SummaryBelief** | **0.242** | 0.227 | **321** | **22.3x** |
+| multifieldqa_en | **SummaryBelief** | **0.242** | 0.224 | **321** | **22.3x** |
 
 ### Two findings
 
@@ -167,8 +167,10 @@ Sources: `benchmarks/summary_mlx_reduced.json`, `benchmarks/summary_anthropic_re
 
 **2. SummaryBelief is a model-dependent compression-vs-information trade-off.** It replaces each component's raw chunks with a single LLM-generated summary, yielding 15–40× compression of the injected context — and shifts the F1 outcome in opposite directions depending on the consumer model:
 
-- On a **weak / quantized model** (Qwen3-8B-4bit) summarized context **outperforms** the full-context baseline by **+29% to +65% F1**. The compressed payload is easier for limited attention to use than the raw chunks.
-- On a **strong frontier model** (Haiku 4.5) summarization **underperforms** by **−13% to −19% F1**. The model can exploit the full context, and the summary discards information it would have used.
+- On a **weak / quantized model** (Qwen3-8B-4bit) summarized context **outperforms** the best baseline by **+29% to +64% F1**. The compressed payload is easier for limited attention to use than the raw chunks.
+- On a **strong frontier model** (Haiku 4.5) summarization **underperforms** the best baseline by **−14% to −16% F1**. The model can exploit the full context, and the summary discards information it would have used.
+
+Avg tokens and Compression columns above reflect MLX runs; Haiku produces marginally shorter summaries (16–41× compression on the same tasks). Full per-model values: `benchmarks/summary_mlx_reduced.json`, `benchmarks/summary_anthropic_reduced.json`.
 
 The compression ratio (15–40×) is preserved on both models — the cost in tokens is objective, only the quality outcome shifts.
 
