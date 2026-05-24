@@ -26,3 +26,7 @@ notebooks/.ipynb_checkpoints/
 
 # scratch / exploration notebooks (kept locally only)
 notebooks/exploration*.ipynb
+
+# smoke / throwaway benchmark outputs
+benchmarks/results_*_smoke.json
+benchmarks/summary_*_smoke.json
