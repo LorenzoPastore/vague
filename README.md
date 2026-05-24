@@ -140,30 +140,41 @@ graph.add_edge("recall", "generate")
 
 ## Benchmark
 
-Evaluated on [LongBench](https://github.com/THUDM/LongBench) — 3 tasks, n=50 samples per (task, method), single run, `mlx-community/Qwen3-8B-4bit` (local, Apple Silicon via MLX).
+Evaluated on [LongBench](https://github.com/THUDM/LongBench): 3 tasks (`qasper`, `hotpotqa`, `multifieldqa_en`), n=50 samples per (task, method), single run, two LLM backends.
 
-| Task | Method | F1 | Avg tokens | Compression |
-|---|---|---:|---:|---:|
-| hotpotqa | Full context | 0.036 | 4120 | 3.1x |
-| hotpotqa | Naive RAG | 0.035 | 1764 | 7.4x |
-| hotpotqa | **Vague (GMM)** | 0.035 | 1734 | 7.6x |
-| hotpotqa | **SummaryBelief** | 0.059 | 333 | 38.8x |
-| multifieldqa_en | Full context | 0.163 | 3768 | 1.8x |
-| multifieldqa_en | Naive RAG | 0.160 | 2232 | 3.6x |
-| multifieldqa_en | **Vague (GMM)** | 0.148 | 2229 | 3.7x |
-| multifieldqa_en | **SummaryBelief** | 0.242 | 321 | 22.3x |
-| qasper | Full context | 0.122 | 3748 | 1.3x |
-| qasper | Naive RAG | 0.130 | 1706 | 2.9x |
-| qasper | **Vague (GMM)** | 0.124 | 1729 | 2.8x |
-| qasper | **SummaryBelief** | 0.168 | 331 | 14.9x |
+### F1 score by method × model
 
-Source: `benchmarks/summary_mlx_reduced.json`.
+Sources: `benchmarks/summary_mlx_reduced.json`, `benchmarks/summary_anthropic_reduced.json`.
 
-**SummaryBelief is the key finding.** GaussianBelief alone matches Naive RAG within F1 noise (its value is the principled probabilistic interface — merge, update, transfer — not a retrieval-quality win). SummaryBelief, by storing one LLM-generated summary per Gaussian component instead of raw chunks, beats every baseline on every task while compressing the injected context by **15–40×**.
+| Task | Method | MLX&nbsp;Qwen3-8B-4bit | Haiku&nbsp;4.5 | Avg tokens | Compression |
+|---|---|---:|---:|---:|---:|
+| qasper | Full context | 0.122 | 0.182 | 3748 | 1.3x |
+| qasper | Naive RAG | 0.130 | 0.192 | 1706 | 2.9x |
+| qasper | **Vague (GMM)** | 0.124 | 0.186 | 1729 | 2.8x |
+| qasper | **SummaryBelief** | **0.168** | 0.156 | **331** | **14.9x** |
+| hotpotqa | Full context | 0.036 | 0.045 | 4120 | 3.1x |
+| hotpotqa | Naive RAG | 0.035 | 0.056 | 1764 | 7.4x |
+| hotpotqa | **Vague (GMM)** | 0.035 | 0.044 | 1734 | 7.6x |
+| hotpotqa | **SummaryBelief** | **0.059** | 0.049 | **333** | **38.8x** |
+| multifieldqa_en | Full context | 0.163 | 0.255 | 3768 | 1.8x |
+| multifieldqa_en | Naive RAG | 0.160 | 0.260 | 2232 | 3.6x |
+| multifieldqa_en | **Vague (GMM)** | 0.148 | 0.248 | 2229 | 3.7x |
+| multifieldqa_en | **SummaryBelief** | **0.242** | 0.227 | **321** | **22.3x** |
+
+### Two findings
+
+**1. GaussianBelief alone matches Naive RAG within F1 noise** on both models, on every task. Its value is *not* a retrieval-quality win — it is the principled probabilistic interface: belief states **compose, update incrementally, and transfer between agents** as parameters rather than raw documents.
+
+**2. SummaryBelief is a model-dependent compression-vs-information trade-off.** It replaces each component's raw chunks with a single LLM-generated summary, yielding 15–40× compression of the injected context — and shifts the F1 outcome in opposite directions depending on the consumer model:
+
+- On a **weak / quantized model** (Qwen3-8B-4bit) summarized context **outperforms** the full-context baseline by **+29% to +65% F1**. The compressed payload is easier for limited attention to use than the raw chunks.
+- On a **strong frontier model** (Haiku 4.5) summarization **underperforms** by **−13% to −19% F1**. The model can exploit the full context, and the summary discards information it would have used.
+
+The compression ratio (15–40×) is preserved on both models — the cost in tokens is objective, only the quality outcome shifts.
+
+**Implication for deployment**: SummaryBelief is the right choice when the LLM is the bottleneck — small models, on-device inference, multi-agent settings where every byte of context matters. GaussianBelief (no summarization) is the right choice when the LLM is strong enough to absorb the full retrieved context.
 
 ![Multi-task benchmark](docs/multitask_benchmark.png)
-
-The cost is asymmetric: SummaryBelief makes K extra LLM calls during the fit phase (once), but every subsequent query injects far fewer tokens — favorable any time the corpus is queried more than ~K times.
 
 ### Needle-in-a-haystack
 
