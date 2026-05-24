@@ -1,28 +1,41 @@
-"""Benchmark runner for LongBench using local mlx_lm models.
+"""Provider-agnostic benchmark runner for LongBench.
 
-Apple Silicon only. Install the optional extra: ``pip install -e .[mlx]``.
+Backends supported via ``--provider``:
+    mlx        — local Apple Silicon (default; ``pip install -e .[mlx]``)
+    groq       — Groq LPU cloud (needs GROQ_API_KEY)
+    cerebras   — Cerebras wafer-scale (needs CEREBRAS_API_KEY)
+    anthropic  — Claude API (needs ANTHROPIC_API_KEY)
+    together   — Together AI (needs TOGETHER_API_KEY)
+    fireworks  — Fireworks (needs FIREWORKS_API_KEY)
+    openrouter — OpenRouter aggregator (needs OPENROUTER_API_KEY)
+    ollama     — local Ollama server (no key needed)
 
-Default config: 3 runs × 3 tasks × n=200, Qwen3-8B-4bit, all 4 methods
-(vague, naive_rag, full_context, summary_belief).
+Default config: 3 runs × 3 tasks × n=200, all 4 methods (vague, naive_rag,
+full_context, summary_belief). Default model is provider-specific (see
+PROVIDER_DEFAULT_MODELS in source).
 
 Usage::
 
-    # full default run
+    # full default run on local MLX
     python benchmarks/run_mlx_benchmark.py
 
-    # smoke test: 1 task, 10 samples, 1 run, all methods
-    python benchmarks/run_mlx_benchmark.py --tasks qasper --n-samples 10 --n-runs 1
+    # smoke test on Groq Llama 3.3 70B (cloud, ~280 tok/s)
+    python benchmarks/run_mlx_benchmark.py --provider groq \\
+        --tasks qasper --n-samples 10 --n-runs 1 --tag smoke
 
-    # quick demo-grade reduced run
-    python benchmarks/run_mlx_benchmark.py --n-samples 50 --n-runs 1
+    # full benchmark on Cerebras Qwen-3 235B (~2200 tok/s)
+    python benchmarks/run_mlx_benchmark.py --provider cerebras \\
+        --n-samples 100 --n-runs 3
 
     # exclude experimental summary_belief
-    python benchmarks/run_mlx_benchmark.py --methods vague naive_rag full_context
+    python benchmarks/run_mlx_benchmark.py \\
+        --methods vague naive_rag full_context
 
 Outputs:
-    benchmarks/results_mlx.json  — raw per-run results
-    benchmarks/summary_mlx.json  — aggregated per (task, method)
+    benchmarks/results_<provider>[_<tag>].json  — raw per-run results
+    benchmarks/summary_<provider>[_<tag>].json  — aggregated per (task, method)
     Prints summary table with mean±std and 95% bootstrap CI to stdout.
+    Checkpoint-resumable: re-runs of the same command skip cells already done.
 """
 
 from __future__ import annotations
@@ -56,11 +69,50 @@ def bootstrap_ci(scores: list[float], n_boot: int = 1000, alpha: float = 0.05) -
 DEFAULT_TASKS = ["qasper", "hotpotqa", "multifieldqa_en"]
 DEFAULT_METHODS = ["vague", "naive_rag", "full_context", "summary_belief"]
 
+# Default model per provider — sensible flagship choices.
+PROVIDER_DEFAULT_MODELS: dict[str, str] = {
+    "mlx":       "mlx-community/Qwen3-8B-4bit",
+    "groq":      "llama-3.3-70b-versatile",
+    "cerebras":  "qwen-3-235b-a22b-instruct-2507",
+    "anthropic": "claude-haiku-4-5-20251001",
+    "together":  "Qwen/Qwen2.5-72B-Instruct-Turbo",
+    "fireworks": "accounts/fireworks/models/qwen2p5-72b-instruct",
+    "openrouter":"qwen/qwen-2.5-72b-instruct",
+    "ollama":    "qwen3:8b",
+}
+
+
+def _build_llm_fn(provider: str, model: str, max_tokens: int):
+    """Resolve a llm_fn for the requested provider."""
+    from vague.adapters import (
+        anthropic_fn, cerebras_fn, fireworks_fn, groq_fn,
+        mlx_lm_fn, ollama_fn, openrouter_fn, together_fn,
+    )
+    factories = {
+        "mlx":        lambda: mlx_lm_fn(model, max_tokens=max_tokens),
+        "groq":       lambda: groq_fn(model, max_tokens=max_tokens),
+        "cerebras":   lambda: cerebras_fn(model, max_tokens=max_tokens),
+        "anthropic":  lambda: anthropic_fn(model=model, max_tokens=max_tokens),
+        "together":   lambda: together_fn(model, max_tokens=max_tokens),
+        "fireworks":  lambda: fireworks_fn(model, max_tokens=max_tokens),
+        "openrouter": lambda: openrouter_fn(model, max_tokens=max_tokens),
+        "ollama":     lambda: ollama_fn(model, max_tokens=max_tokens),
+    }
+    if provider not in factories:
+        raise ValueError(
+            f"Unknown provider {provider!r}. Choose one of: {sorted(factories)}"
+        )
+    return factories[provider]()
+
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--model", default="mlx-community/Qwen3-8B-4bit",
-                   help="HF repo id or alias for the MLX model.")
+    p.add_argument("--provider", default="mlx",
+                   choices=sorted(PROVIDER_DEFAULT_MODELS.keys()),
+                   help="LLM backend. Default 'mlx' (local Apple Silicon).")
+    p.add_argument("--model", default=None,
+                   help="Model identifier. Defaults to a sensible per-provider "
+                        "choice (see PROVIDER_DEFAULT_MODELS in source).")
     p.add_argument("--tasks", nargs="+", default=DEFAULT_TASKS,
                    help="LongBench tasks to evaluate.")
     p.add_argument("--methods", nargs="+", default=DEFAULT_METHODS,
@@ -74,25 +126,37 @@ def _parse_args() -> argparse.Namespace:
                    help="LLM max output tokens.")
     p.add_argument("--tag", default="",
                    help="Optional suffix for output filenames (e.g. 'smoke').")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.model is None:
+        args.model = PROVIDER_DEFAULT_MODELS[args.provider]
+    return args
 
 
 def main() -> None:
     repo_root = Path(__file__).parent.parent
     sys.path.insert(0, str(repo_root))
 
-    from vague.adapters.mlx_lm import mlx_lm_fn
     from benchmarks.longbench import LongBenchEval
 
     args = _parse_args()
+    PROVIDER = args.provider
     MODEL = args.model
     TASKS = args.tasks
     METHODS = args.methods
     N_SAMPLES = args.n_samples
     N_RUNS = args.n_runs
     CACHE_DIR = str(repo_root / ".cache")
-    suffix = f"_{args.tag}" if args.tag else ""
+    # Output filename: results_<provider>[_<tag>].json — provider always
+    # included so different backends don't overwrite each other. Tag is
+    # appended only if explicitly supplied.
+    # NOTE: this preserves the legacy MLX naming (results_mlx_<tag>.json)
+    # so existing checkpoints from prior runs remain reusable.
+    parts = [PROVIDER]
+    if args.tag:
+        parts.append(args.tag)
+    suffix = "_" + "_".join(parts)
 
+    print(f"[benchmark] Provider: {PROVIDER}")
     print(f"[benchmark] Model: {MODEL}")
     print(f"[benchmark] Tasks: {TASKS}")
     print(f"[benchmark] Methods: {METHODS}")
@@ -100,7 +164,7 @@ def main() -> None:
     print()
 
     # Resume support: load any existing checkpoint and skip completed cells.
-    out_path = repo_root / "benchmarks" / f"results_mlx{suffix}.json"
+    out_path = repo_root / "benchmarks" / f"results{suffix}.json"
     if out_path.exists():
         with open(out_path) as f:
             raw_results: dict[str, dict[str, list[dict]]] = json.load(f)
@@ -121,12 +185,16 @@ def main() -> None:
         with open(out_path, "w") as f:
             json.dump(raw_results, f, indent=2)
 
-    # Build llm_fn once — model loads lazily on first call
-    llm = mlx_lm_fn(MODEL, max_tokens=args.max_tokens)
+    # Build llm_fn once — provider-specific factory; MLX/Ollama load lazily.
+    llm = _build_llm_fn(PROVIDER, MODEL, args.max_tokens)
 
     for run_idx in range(N_RUNS):
         print(f"=== Run {run_idx + 1}/{N_RUNS} ===")
-        eval_ = LongBenchEval(llm_fn=llm, cache_dir=CACHE_DIR)
+        eval_ = LongBenchEval(
+            llm_fn=llm,
+            cache_dir=CACHE_DIR,
+            model_id=f"{PROVIDER}-{MODEL}",
+        )
         for task in TASKS:
             for method in METHODS:
                 if len(raw_results[task][method]) > run_idx:
@@ -202,7 +270,7 @@ def main() -> None:
     print("=" * 90)
 
     # Save summary
-    summary_path = repo_root / "benchmarks" / f"summary_mlx{suffix}.json"
+    summary_path = repo_root / "benchmarks" / f"summary{suffix}.json"
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"[benchmark] Summary saved → {summary_path}")

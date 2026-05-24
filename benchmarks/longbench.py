@@ -243,12 +243,40 @@ class EvalResult:
 # LongBenchEval
 # ---------------------------------------------------------------------------
 
+def _safe_id(s: str) -> str:
+    """Sanitize a model identifier into a filesystem-safe slug."""
+    return re.sub(r"[^a-zA-Z0-9._-]+", "_", s).strip("_")
+
+
 class LongBenchEval:
-    def __init__(self, llm_fn: Callable[[str], str], cache_dir: str = ".cache") -> None:
+    def __init__(
+        self,
+        llm_fn: Callable[[str], str],
+        cache_dir: str = ".cache",
+        model_id: str | None = None,
+    ) -> None:
+        """Evaluate LongBench tasks across retrieval methods.
+
+        Args:
+            llm_fn: Callable ``(prompt: str) -> str`` to use as the underlying
+                language model. Wrapped transparently in a disk cache.
+            cache_dir: Directory for LLM response cache and dataset cache.
+            model_id: Identifier (e.g. ``"groq-llama-3.3-70b-versatile"``) used
+                to key the response cache. If None, the legacy shared cache
+                file ``llm_responses.json`` is used (kept for backward compat;
+                NOT safe across different models — prefer passing model_id).
+        """
         os.makedirs(cache_dir, exist_ok=True)
-        llm_cache_path = os.path.join(cache_dir, "llm_responses.json")
+        # Per-model cache file: different models / providers get disjoint
+        # response caches so their numbers can be compared apples-to-apples.
+        if model_id:
+            cache_name = f"llm_responses_{_safe_id(model_id)}.json"
+        else:
+            cache_name = "llm_responses.json"
+        llm_cache_path = os.path.join(cache_dir, cache_name)
         self.llm_fn = _LLMCache(llm_fn, llm_cache_path)
         self.cache_dir = cache_dir
+        self.model_id = model_id
         self._naive_rag: _NaiveRAG | None = None
 
     # ------------------------------------------------------------------
